@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Joyose NoLimit</string>
+    <string name="xposed_description">完全屏蔽 Joyose 温控限帧写入，保留 Game Turbo 等其他全部功能</string>
+</resources>
