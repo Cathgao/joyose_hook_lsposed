@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.gao.joyosenolimit"
-    android:versionCode="1"
-    android:versionName="1.0.0">
+    android:versionCode="2"
+    android:versionName="1.1.0">
 
     <uses-sdk
         android:minSdkVersion="26"
@@ -37,6 +37,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".StatReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.gao.joyosenolimit.ACTION_INTERCEPTED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

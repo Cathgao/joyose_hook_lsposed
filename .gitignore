@@ -1,17 +1,51 @@
+# Build outputs
+/build/
+/app/build/
+/out/
+/gen/
+bin/
+reports/
+
+# Gradle
+.gradle/
+buildOutputCleanup/
+configuration-cache/
+
+# Local configuration
+local.properties
+keystore.properties
+
+# Log files
+*.log
+
+# Package files
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+*.idsig
+
+# Android Studio / IntelliJ IDEA
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/app/build
-/captures
+.idea/
+*.ipr
+*.iws
+
+# Visual Studio Code
+.vscode/
+
+# Native build caches
 .externalNativeBuild
 .cxx
-*.apk
-!JoyoseNoLimit.apk
+/captures
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
