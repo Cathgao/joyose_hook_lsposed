@@ -1,6 +1,8 @@
 package com.gao.joyosenolimit;
 
 import android.content.Context;
+import android.content.Intent;
+import android.system.Os;
 import android.util.Log;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -8,8 +10,11 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.lang.reflect.Method;
 
 public class HookInit implements IXposedHookLoadPackage {
@@ -18,6 +23,8 @@ public class HookInit implements IXposedHookLoadPackage {
     private static final String TARGET_PKG = "com.xiaomi.joyose";
     private static final String SELF_PKG = "com.gao.joyosenolimit";
     private static final String TARGET_CLASS = "com.xiaomi.joyose.utils.w";
+    public static final String STAT_FILE = "/data/system/mcd/joyose_nolimit_stat";
+    public static final String ACTION_INTERCEPTED = "com.gao.joyosenolimit.ACTION_INTERCEPTED";
 
     private static void log(String msg) {
         Log.e(LOG_TAG, "[JoyoseNoLimit] " + msg);
@@ -174,6 +181,7 @@ public class HookInit implements IXposedHookLoadPackage {
                         if (pkg != null && fps > 0.0f) {
                             param.setResult(null);
                             log(">>> Intercepted & Blocked w.f -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
+                            recordInterception((Context) param.args[0], pkg, fps, reason);
                         } else {
                             log("Pass-through w.f (restore/clear): pkg=" + pkg + ", fps=" + fps);
                         }
@@ -204,6 +212,7 @@ public class HookInit implements IXposedHookLoadPackage {
                         if (pkg != null && fps > 0) {
                             param.setResult(null);
                             log(">>> Intercepted & Blocked w.g -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
+                            recordInterception((Context) param.args[0], pkg, (float) fps, reason);
                         } else {
                             log("Pass-through w.g (restore/clear): pkg=" + pkg + ", fps=" + fps);
                         }
@@ -230,6 +239,54 @@ public class HookInit implements IXposedHookLoadPackage {
             log("Hooked method w.d() -> always return -1 (no frame cap)");
         } catch (Throwable t) {
             logError("Failed to hook w.d", t);
+        }
+    }
+
+    /**
+     * Record interception stats to persistent file and broadcast
+     */
+    private static synchronized void recordInterception(Context context, String pkg, float fps, int reason) {
+        long now = System.currentTimeMillis();
+        int count = 0;
+        File file = new File(STAT_FILE);
+        try {
+            if (file.exists()) {
+                BufferedReader br = new BufferedReader(new FileReader(file));
+                String firstLine = br.readLine();
+                br.close();
+                if (firstLine != null && !firstLine.trim().isEmpty()) {
+                    count = Integer.parseInt(firstLine.trim());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        count++;
+
+        try {
+            FileWriter fw = new FileWriter(file, false);
+            fw.write(count + "\n" + pkg + "\n" + fps + "\n" + reason + "\n" + now + "\n");
+            fw.close();
+            try {
+                Os.chmod(STAT_FILE, 438); // 0666 rw-rw-rw-
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable t) {
+            logError("Failed to write interception stat: " + t.getMessage(), t);
+        }
+
+        if (context != null) {
+            try {
+                Intent intent = new Intent(ACTION_INTERCEPTED);
+                intent.setPackage(SELF_PKG);
+                intent.putExtra("count", count);
+                intent.putExtra("pkg", pkg);
+                intent.putExtra("fps", fps);
+                intent.putExtra("reason", reason);
+                intent.putExtra("timestamp", now);
+                context.sendBroadcast(intent);
+            } catch (Throwable t) {
+                logError("Failed to send interception broadcast: " + t.getMessage(), t);
+            }
         }
     }
 

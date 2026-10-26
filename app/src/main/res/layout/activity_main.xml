@@ -25,7 +25,7 @@
             android:text="精准屏蔽温控限帧 · 零副作用 · 完整保留游戏工具箱"
             android:textSize="13sp"
             android:textColor="#757575"
-            android:layout_marginBottom="20dp" />
+            android:layout_marginBottom="16dp" />
 
         <!-- Status Card -->
         <LinearLayout
@@ -45,7 +45,7 @@
                 android:textSize="16sp"
                 android:textStyle="bold"
                 android:textColor="#757575"
-                android:layout_marginBottom="12dp" />
+                android:layout_marginBottom="10dp" />
 
             <TextView
                 android:id="@+id/tv_mcddf"
@@ -55,18 +55,18 @@
                 android:textSize="13sp"
                 android:textColor="#424242"
                 android:fontFamily="monospace"
-                android:layout_marginBottom="12dp" />
+                android:layout_marginBottom="14dp" />
 
             <Button
                 android:id="@+id/btn_restart_joyose"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="重启 Joyose 进程使 Hook 生效 (需 Root)"
+                android:text="重启 JOYOSE 进程使 HOOK 生效 (需 ROOT)"
                 android:backgroundTint="#1976D2"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
-        <!-- Principle Card -->
+        <!-- Interception Stats Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -75,22 +75,82 @@
             android:padding="16dp"
             android:elevation="2dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="工作原理与说明"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:textColor="#212121"
-                android:layout_marginBottom="10dp" />
-
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="1. 精准拦截汇聚点：Joyose 所有动态温控与 PID 降频限帧，最终都统一汇聚到 com.xiaomi.joyose.utils.w (MiDFUtils) 的 f 与 g 方法。\n\n2. 阻断下发：本模块拦截对 /data/system/mcd/df 写入及向下游调度器广播，使系统底层永远保持满血帧率。\n\n3. 零功能破坏：不修改系统温控数据库，不停止 Joyose 核心服务。Game Turbo 侧边栏、画质增强、触控优化、游戏网络加速等功能 100% 完整保留。\n\n4. 验证方式：可在终端执行 logcat -s LSPosed-JoyoseNoLimit 观察拦截日志。"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="温控限帧拦截统计"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:textColor="#212121" />
+
+                <TextView
+                    android:id="@+id/btn_reset_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="清空统计"
+                    android:textSize="12sp"
+                    android:textColor="#1976D2"
+                    android:padding="6dp"
+                    android:background="?android:attr/selectableItemBackground" />
+            </LinearLayout>
+
+            <!-- Counter Box -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:paddingVertical="12dp"
+                android:background="#F8FAFC"
+                android:layout_marginBottom="14dp">
+
+                <TextView
+                    android:id="@+id/tv_intercept_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textSize="44sp"
+                    android:textStyle="bold"
+                    android:textColor="#1976D2" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="次"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:textColor="#546E7A"
+                    android:layout_marginStart="6dp" />
+            </LinearLayout>
+
+            <!-- Recent Interception Box -->
+            <TextView
+                android:id="@+id/tv_recent_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="最近一次拦截："
                 android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="#37474F"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/tv_recent_detail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="暂无拦截记录 (触发温控降频时自动拦截并计数)"
+                android:textSize="12sp"
                 android:textColor="#616161"
-                android:lineSpacingExtra="4dp" />
+                android:lineSpacingExtra="4dp"
+                android:fontFamily="monospace" />
         </LinearLayout>
 
     </LinearLayout>
