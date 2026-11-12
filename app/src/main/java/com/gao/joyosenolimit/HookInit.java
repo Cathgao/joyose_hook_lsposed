@@ -18,7 +18,7 @@ public class HookInit implements IXposedHookLoadPackage {
     public static final String LOG_TAG = "LSPosed-JoyoseNoLimit";
     private static final String TARGET_PKG = "com.xiaomi.joyose";
     private static final String SELF_PKG = "com.gao.joyosenolimit";
-    private static final String TARGET_CLASS = "com.xiaomi.joyose.utils.w";
+    private static final String DEFAULT_TARGET_CLASS = "com.xiaomi.joyose.utils.w";
     public static final String ACTION_INTERCEPTED = "com.gao.joyosenolimit.ACTION_INTERCEPTED";
 
     private static void log(String msg) {
@@ -75,7 +75,7 @@ public class HookInit implements IXposedHookLoadPackage {
             log("Note: JoyoseApplication.onCreate not hooked (" + t.getMessage() + "), hooking sinks directly.");
         }
 
-        // Hook Joyose frame-rate limiter sinks
+        // Hook Joyose frame-rate limiter sinks dynamically by method signatures
         try {
             Class<?> targetClass = findTargetClass(lpparam.classLoader);
             if (targetClass == null) {
@@ -112,19 +112,20 @@ public class HookInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * Find com.xiaomi.joyose.utils.w or fallback candidate
+     * Find MiDFUtils class dynamically with signature verification
      */
     private Class<?> findTargetClass(ClassLoader classLoader) {
-        try {
-            return classLoader.loadClass(TARGET_CLASS);
-        } catch (ClassNotFoundException e) {
-            log("Standard class " + TARGET_CLASS + " not found, scanning common names...");
-        }
-
+        // 1. Try standard / known candidate class names first
         String[] candidates = {
-            "com.xiaomi.joyose.utils.w",
+            DEFAULT_TARGET_CLASS,
             "com.xiaomi.joyose.utils.v",
             "com.xiaomi.joyose.utils.x",
+            "com.xiaomi.joyose.utils.y",
+            "com.xiaomi.joyose.utils.z",
+            "com.xiaomi.joyose.utils.u",
+            "com.xiaomi.joyose.utils.a0",
+            "com.xiaomi.joyose.utils.b0",
+            "com.xiaomi.joyose.utils.c0",
             "com.xiaomi.joyose.utils.MiDFUtils"
         };
 
@@ -132,11 +133,26 @@ public class HookInit implements IXposedHookLoadPackage {
             try {
                 Class<?> cls = classLoader.loadClass(c);
                 if (hasDfSignatures(cls)) {
+                    log("Found target class with DF signatures: " + c);
                     return cls;
                 }
             } catch (Throwable ignored) {
             }
         }
+
+        // 2. Fallback: scan all single letter classes in com.xiaomi.joyose.utils
+        for (char ch = 'a'; ch <= 'z'; ch++) {
+            String c = "com.xiaomi.joyose.utils." + ch;
+            try {
+                Class<?> cls = classLoader.loadClass(c);
+                if (hasDfSignatures(cls)) {
+                    log("Found target class via alphabet scan: " + c);
+                    return cls;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
         return null;
     }
 
@@ -154,87 +170,85 @@ public class HookInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * Hook f, g, and d in MiDFUtils (com.xiaomi.joyose.utils.w)
+     * Dynamically hook float and int frame limit methods by parameter signature,
+     * not hardcoded method names (which differ across Joyose versions: f/g vs g/h, etc.).
      */
     private void hookMiDFUtils(Class<?> targetClass) {
-        // 1. Hook w.f(Context, String pkg, float fps, int reason)
-        try {
-            XposedHelpers.findAndHookMethod(
-                targetClass,
-                "f",
-                Context.class,
-                String.class,
-                float.class,
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        String pkg = (String) param.args[1];
-                        float fps = (Float) param.args[2];
-                        int reason = (Integer) param.args[3];
+        int hookedCount = 0;
 
-                        if (pkg != null && fps > 0.0f) {
-                            param.setResult(null);
-                            log(">>> Intercepted & Blocked w.f -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
-                            recordInterception((Context) param.args[0], pkg, fps, reason);
-                        } else {
-                            log("Pass-through w.f (restore/clear): pkg=" + pkg + ", fps=" + fps);
+        for (final Method method : targetClass.getDeclaredMethods()) {
+            Class<?>[] p = method.getParameterTypes();
+
+            // 1. Float limiter sink: (Context, String pkg, float fps, int reason)
+            if (p.length == 4 && p[0] == Context.class && p[1] == String.class && p[2] == float.class && p[3] == int.class) {
+                try {
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String pkg = (String) param.args[1];
+                            float fps = (Float) param.args[2];
+                            int reason = (Integer) param.args[3];
+
+                            if (pkg != null && fps > 0.0f) {
+                                param.setResult(null);
+                                clearMcdDfFile();
+                                log(">>> Intercepted & Blocked " + method.getName() + " (float) -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
+                                recordInterception((Context) param.args[0], pkg, fps, reason);
+                            } else {
+                                log("Pass-through " + method.getName() + " (float restore/clear): pkg=" + pkg + ", fps=" + fps);
+                            }
                         }
-                    }
+                    });
+                    hookedCount++;
+                    log("Hooked float limiter method: " + method.getName() + "(Context, String, float, int)");
+                } catch (Throwable t) {
+                    logError("Failed to hook float limiter " + method.getName(), t);
                 }
-            );
-            log("Hooked method w.f(Context, String, float, int)");
-        } catch (Throwable t) {
-            logError("Failed to hook w.f", t);
-        }
+            }
+            // 2. Integer limiter sink: (Context, String pkg, int fps, int reason)
+            else if (p.length == 4 && p[0] == Context.class && p[1] == String.class && p[2] == int.class && p[3] == int.class) {
+                try {
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String pkg = (String) param.args[1];
+                            int fps = (Integer) param.args[2];
+                            int reason = (Integer) param.args[3];
 
-        // 2. Hook w.g(Context, String pkg, int fps, int reason)
-        try {
-            XposedHelpers.findAndHookMethod(
-                targetClass,
-                "g",
-                Context.class,
-                String.class,
-                int.class,
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        String pkg = (String) param.args[1];
-                        int fps = (Integer) param.args[2];
-                        int reason = (Integer) param.args[3];
-
-                        if (pkg != null && fps > 0) {
-                            param.setResult(null);
-                            log(">>> Intercepted & Blocked w.g -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
-                            recordInterception((Context) param.args[0], pkg, (float) fps, reason);
-                        } else {
-                            log("Pass-through w.g (restore/clear): pkg=" + pkg + ", fps=" + fps);
+                            if (pkg != null && fps > 0) {
+                                param.setResult(null);
+                                clearMcdDfFile();
+                                log(">>> Intercepted & Blocked " + method.getName() + " (int) -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
+                                recordInterception((Context) param.args[0], pkg, (float) fps, reason);
+                            } else {
+                                log("Pass-through " + method.getName() + " (int restore/clear): pkg=" + pkg + ", fps=" + fps);
+                            }
                         }
-                    }
+                    });
+                    hookedCount++;
+                    log("Hooked int limiter method: " + method.getName() + "(Context, String, int, int)");
+                } catch (Throwable t) {
+                    logError("Failed to hook int limiter " + method.getName(), t);
                 }
-            );
-            log("Hooked method w.g(Context, String, int, int)");
-        } catch (Throwable t) {
-            logError("Failed to hook w.g", t);
+            }
+            // 3. State getter: ()I (e.g. w.d()) -> always return -1
+            else if (p.length == 0 && method.getReturnType() == int.class) {
+                try {
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            param.setResult(-1);
+                        }
+                    });
+                    hookedCount++;
+                    log("Hooked frame status getter: " + method.getName() + "() -> always return -1");
+                } catch (Throwable t) {
+                    logError("Failed to hook state getter " + method.getName(), t);
+                }
+            }
         }
 
-        // 3. Hook w.d() -> int (reads /data/system/mcd/df, returns -1 if no limit)
-        try {
-            XposedHelpers.findAndHookMethod(
-                targetClass,
-                "d",
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        param.setResult(-1);
-                    }
-                }
-            );
-            log("Hooked method w.d() -> always return -1 (no frame cap)");
-        } catch (Throwable t) {
-            logError("Failed to hook w.d", t);
-        }
+        log("Total methods hooked in " + targetClass.getName() + ": " + hookedCount);
     }
 
     /**
@@ -257,14 +271,23 @@ public class HookInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * Clear /data/system/mcd/df if leftover limit exists
+     * Clear /data/system/mcd/df & /data/system/mcd/dfi if leftover limit exists
      */
-    private void clearMcdDfFile() {
+    private static void clearMcdDfFile() {
         try {
             File df = new File("/data/system/mcd/df");
             if (df.exists() && df.length() > 0) {
                 new FileOutputStream(df).close();
                 log("Successfully cleared stale /data/system/mcd/df (truncated to 0 bytes)");
+            }
+        } catch (Throwable t) {
+            // normal
+        }
+        try {
+            File dfi = new File("/data/system/mcd/dfi");
+            if (dfi.exists() && dfi.length() > 0) {
+                new FileOutputStream(dfi).close();
+                log("Successfully cleared stale /data/system/mcd/dfi (truncated to 0 bytes)");
             }
         } catch (Throwable t) {
             // normal
