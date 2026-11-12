@@ -212,7 +212,8 @@ public class MainActivity extends Activity {
     private void restartJoyose() {
         Log.e(LOG_TAG, "[JoyoseNoLimit] Attempting to restart Joyose via root...");
         try {
-            Process process = Runtime.getRuntime().exec(new String[]{"su", "-c", "killall com.xiaomi.joyose; pkill -9 -f com.xiaomi.joyose"});
+            String cmd = "P=$(pidof com.xiaomi.joyose); [ -n \"$P\" ] && kill -9 $P; exit 0";
+            Process process = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
             int exitCode = process.waitFor();
             if (exitCode == 0) {
                 Toast.makeText(this, "Joyose 进程已重启，Hook 生效！", Toast.LENGTH_SHORT).show();
