@@ -65,7 +65,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        initPreseededStatsIfNeeded();
         cleanupOldStatFileIfExists();
     }
 
@@ -126,8 +125,8 @@ public class MainActivity extends Activity {
             tvStatus.setText("● 模块状态：已在 LSPosed 中激活");
             tvStatus.setTextColor(0xFF4CAF50); // Material Green
         } else {
-            tvStatus.setText("● 模块状态：已在 LSPosed 中激活");
-            tvStatus.setTextColor(0xFF4CAF50);
+            tvStatus.setText("● 模块状态：未激活 (请在 LSPosed 中勾选并重启)");
+            tvStatus.setTextColor(0xFFF44336); // Red
         }
 
         readMcdDf();
@@ -195,22 +194,6 @@ public class MainActivity extends Activity {
         cleanupOldStatFileIfExists();
         updateStatsUI(0, "", 0f, 0, 0L);
         Toast.makeText(this, "拦截统计已清零", Toast.LENGTH_SHORT).show();
-    }
-
-    /**
-     * Seed first interception record if not set
-     */
-    private void initPreseededStatsIfNeeded() {
-        SharedPreferences sp = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        if (!sp.contains("count")) {
-            sp.edit()
-                .putInt("count", 1)
-                .putString("pkg", "com.sega.pjsekai")
-                .putFloat("fps", 60f)
-                .putInt("reason", 12)
-                .putLong("timestamp", System.currentTimeMillis())
-                .apply();
-        }
     }
 
     /**
