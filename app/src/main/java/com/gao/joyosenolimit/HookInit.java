@@ -9,9 +9,14 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 
 public class HookInit implements IXposedHookLoadPackage {
 
@@ -20,6 +25,10 @@ public class HookInit implements IXposedHookLoadPackage {
     private static final String SELF_PKG = "com.gao.joyosenolimit";
     private static final String DEFAULT_TARGET_CLASS = "com.xiaomi.joyose.utils.w";
     public static final String ACTION_INTERCEPTED = "com.gao.joyosenolimit.ACTION_INTERCEPTED";
+    public static final String STAT_FILE_NAME = "joyose_nolimit_stats.txt";
+
+    private static final Object STAT_LOCK = new Object();
+    private static volatile Context sJoyoseContext;
 
     private static void log(String msg) {
         Log.e(LOG_TAG, "[JoyoseNoLimit] " + msg);
@@ -58,7 +67,7 @@ public class HookInit implements IXposedHookLoadPackage {
         // Clean stale /data/system/mcd/df on Joyose startup
         clearMcdDfFile();
 
-        // Hook JoyoseApplication.onCreate for lifecycle confirmation
+        // Hook JoyoseApplication.onCreate for lifecycle confirmation and fallback context capture
         try {
             XposedHelpers.findAndHookMethod(
                 "com.xiaomi.joyose.JoyoseApplication",
@@ -67,6 +76,9 @@ public class HookInit implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (param.thisObject instanceof Context) {
+                            sJoyoseContext = (Context) param.thisObject;
+                        }
                         log("JoyoseApplication.onCreate() finished. Frame-limit interception is active!");
                     }
                 }
@@ -252,44 +264,108 @@ public class HookInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * Broadcast interception event directly to app (no files in /data/system/mcd)
+     * Persist interception stats directly into Joyose's private files directory
+     * (no app background process or autostart required). Also sends a
+     * registered-only broadcast so an already-open MainActivity refreshes live.
      */
     private static void recordInterception(Context context, String pkg, float fps, int reason) {
+        Context resolved = resolveContext(context);
+        if (resolved == null) {
+            logError("Failed to record interception: Context is null", null);
+            return;
+        }
+        sJoyoseContext = resolved;
+
+        long now = System.currentTimeMillis();
+        String safePkg = pkg.replace('\n', ' ').replace('\r', ' ').trim();
+
+        synchronized (STAT_LOCK) {
+            File filesDir = resolved.getFilesDir();
+            File statFile = new File(filesDir, STAT_FILE_NAME);
+            int count = readExistingCount(statFile) + 1;
+
+            String payload = count + "\n" + safePkg + "\n" + fps + "\n" + reason + "\n" + now + "\n";
+            writeStatAtomically(filesDir, statFile, payload);
+            log("Recorded interception #" + count + " to " + statFile.getAbsolutePath());
+        }
+
+        try {
+            Intent intent = new Intent(ACTION_INTERCEPTED);
+            intent.setPackage(SELF_PKG);
+            intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
+            resolved.sendBroadcast(intent);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Context resolveContext(Context context) {
         if (context != null) {
-            try {
-                Intent intent = new Intent(ACTION_INTERCEPTED);
-                intent.setPackage(SELF_PKG);
-                intent.putExtra("pkg", pkg);
-                intent.putExtra("fps", fps);
-                intent.putExtra("reason", reason);
-                intent.putExtra("timestamp", System.currentTimeMillis());
-                context.sendBroadcast(intent);
-            } catch (Throwable t) {
-                logError("Failed to send interception broadcast: " + t.getMessage(), t);
+            Context appCtx = context.getApplicationContext();
+            return appCtx != null ? appCtx : context;
+        }
+        return sJoyoseContext;
+    }
+
+    private static int readExistingCount(File statFile) {
+        if (!statFile.exists()) {
+            return 0;
+        }
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(new FileInputStream(statFile), StandardCharsets.UTF_8))) {
+            String firstLine = br.readLine();
+            if (firstLine != null && !firstLine.trim().isEmpty()) {
+                return Math.max(0, Integer.parseInt(firstLine.trim()));
             }
+        } catch (Throwable t) {
+            logError("Failed to read existing stat count: " + t.getMessage(), t);
+        }
+        return 0;
+    }
+
+    private static void writeStatAtomically(File dir, File target, String content) {
+        File tmpFile = new File(dir, STAT_FILE_NAME + ".tmp");
+        try {
+            try (OutputStreamWriter writer = new OutputStreamWriter(
+                    new FileOutputStream(tmpFile, false), StandardCharsets.UTF_8)) {
+                writer.write(content);
+                writer.flush();
+            }
+            if (!tmpFile.renameTo(target)) {
+                try (OutputStreamWriter writer = new OutputStreamWriter(
+                        new FileOutputStream(target, false), StandardCharsets.UTF_8)) {
+                    writer.write(content);
+                    writer.flush();
+                }
+                tmpFile.delete();
+            }
+        } catch (Throwable t) {
+            logError("Failed to persist interception stats: " + t.getMessage(), t);
         }
     }
 
     /**
-     * Clear /data/system/mcd/df & /data/system/mcd/dfi if leftover limit exists
+     * Clear /data/system/mcd/df, /data/system/mcd/dfi and legacy stat file if present
      */
     private static void clearMcdDfFile() {
+        truncateIfNonEmpty("/data/system/mcd/df");
+        truncateIfNonEmpty("/data/system/mcd/dfi");
         try {
-            File df = new File("/data/system/mcd/df");
-            if (df.exists() && df.length() > 0) {
-                new FileOutputStream(df).close();
-                log("Successfully cleared stale /data/system/mcd/df (truncated to 0 bytes)");
+            File legacy = new File("/data/system/mcd/joyose_nolimit_stat");
+            if (legacy.exists()) {
+                legacy.delete();
             }
-        } catch (Throwable t) {
-            // normal
+        } catch (Throwable ignored) {
         }
+    }
+
+    private static void truncateIfNonEmpty(String path) {
         try {
-            File dfi = new File("/data/system/mcd/dfi");
-            if (dfi.exists() && dfi.length() > 0) {
-                new FileOutputStream(dfi).close();
-                log("Successfully cleared stale /data/system/mcd/dfi (truncated to 0 bytes)");
+            File f = new File(path);
+            if (f.exists() && f.length() > 0) {
+                new FileOutputStream(f).close();
+                log("Successfully cleared stale " + path + " (truncated to 0 bytes)");
             }
-        } catch (Throwable t) {
+        } catch (Throwable ignored) {
             // normal
         }
     }
