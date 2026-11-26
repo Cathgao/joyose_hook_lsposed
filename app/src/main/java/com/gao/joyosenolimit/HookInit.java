@@ -17,6 +17,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 public class HookInit implements IXposedHookLoadPackage {
 
@@ -29,6 +31,17 @@ public class HookInit implements IXposedHookLoadPackage {
 
     private static final Object STAT_LOCK = new Object();
     private static volatile Context sJoyoseContext;
+    private static volatile String sMatchedClassName;
+
+    private static final class TargetMatch {
+        final Class<?> targetClass;
+        final String readerMethodName;
+
+        TargetMatch(Class<?> targetClass, String readerMethodName) {
+            this.targetClass = targetClass;
+            this.readerMethodName = readerMethodName;
+        }
+    }
 
     private static void log(String msg) {
         Log.e(LOG_TAG, "[JoyoseNoLimit] " + msg);
@@ -78,6 +91,10 @@ public class HookInit implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         if (param.thisObject instanceof Context) {
                             sJoyoseContext = (Context) param.thisObject;
+                            String apkPath = lpparam.appInfo != null ? lpparam.appInfo.sourceDir : null;
+                            if (sMatchedClassName != null && apkPath != null) {
+                                DexFinder.writeCachedClassName(sJoyoseContext, apkPath, sMatchedClassName);
+                            }
                         }
                         log("JoyoseApplication.onCreate() finished. Frame-limit interception is active!");
                     }
@@ -87,16 +104,17 @@ public class HookInit implements IXposedHookLoadPackage {
             log("Note: JoyoseApplication.onCreate not hooked (" + t.getMessage() + "), hooking sinks directly.");
         }
 
-        // Hook Joyose frame-rate limiter sinks dynamically by method signatures
+        // Hook Joyose frame-rate limiter sinks dynamically by anchor/signature
         try {
-            Class<?> targetClass = findTargetClass(lpparam.classLoader);
-            if (targetClass == null) {
+            TargetMatch match = findTargetClass(lpparam);
+            if (match == null || match.targetClass == null) {
                 logError("ERROR: Failed to find MiDFUtils class in Joyose!", null);
                 return;
             }
 
-            hookMiDFUtils(targetClass);
-            log("Successfully hooked MiDFUtils (" + targetClass.getName() + ")!");
+            sMatchedClassName = match.targetClass.getName();
+            hookMiDFUtils(match.targetClass, match.readerMethodName);
+            log("Successfully hooked MiDFUtils (" + sMatchedClassName + ")!");
 
         } catch (Throwable t) {
             logError("Unexpected error while hooking Joyose:", t);
@@ -124,10 +142,36 @@ public class HookInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * Find MiDFUtils class dynamically with signature verification
+     * Find MiDFUtils class with fast-path candidates first, then DEX anchor scan
+     * ("/data/system/mcd/df" + "MiDFUtils") for full cross-version/obfuscation resilience.
      */
-    private Class<?> findTargetClass(ClassLoader classLoader) {
-        // 1. Try standard / known candidate class names first
+    private TargetMatch findTargetClass(LoadPackageParam lpparam) {
+        ClassLoader classLoader = lpparam.classLoader;
+        String apkPath = lpparam.appInfo != null ? lpparam.appInfo.sourceDir : null;
+
+        // 0. Try cached class name from Joyose's private files dir (if APK unchanged)
+        if (apkPath != null && lpparam.appInfo != null && lpparam.appInfo.dataDir != null) {
+            File cacheFile = new File(lpparam.appInfo.dataDir, "files/joyose_nolimit_cache.txt");
+            if (cacheFile.exists()) {
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(cacheFile), StandardCharsets.UTF_8))) {
+                    String stamp = br.readLine();
+                    String cachedCls = br.readLine();
+                    File apkFile = new File(apkPath);
+                    String curStamp = apkFile.lastModified() + ":" + apkFile.length();
+                    if (curStamp.equals(stamp) && cachedCls != null && !cachedCls.trim().isEmpty()) {
+                        Class<?> cls = classLoader.loadClass(cachedCls.trim());
+                        if (hasDfSignatures(cls, false)) {
+                            log("Found target class from cache: " + cachedCls.trim());
+                            return new TargetMatch(cls, null);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        // 1. Fast-path: try standard / known candidate class names (<1ms)
         String[] candidates = {
             DEFAULT_TARGET_CLASS,
             "com.xiaomi.joyose.utils.v",
@@ -144,22 +188,38 @@ public class HookInit implements IXposedHookLoadPackage {
         for (String c : candidates) {
             try {
                 Class<?> cls = classLoader.loadClass(c);
-                if (hasDfSignatures(cls)) {
+                if (hasDfSignatures(cls, true)) {
                     log("Found target class with DF signatures: " + c);
-                    return cls;
+                    return new TargetMatch(cls, null);
                 }
             } catch (Throwable ignored) {
             }
         }
 
-        // 2. Fallback: scan all single letter classes in com.xiaomi.joyose.utils
+        // 2. DEX anchor scan: resilient to arbitrary obfuscation / package relocation
+        if (apkPath != null) {
+            List<DexFinder.MatchResult> matches = DexFinder.findMiDFCandidates(apkPath);
+            for (DexFinder.MatchResult m : matches) {
+                try {
+                    Class<?> cls = classLoader.loadClass(m.className);
+                    if (hasDfSignatures(cls, false)) {
+                        log("Found target class via DEX anchor scan: " + m.className
+                                + (m.readerMethodName != null ? " (reader=" + m.readerMethodName + ")" : ""));
+                        return new TargetMatch(cls, m.readerMethodName);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        // 3. Last-resort fallback: scan single/double letter classes in com.xiaomi.joyose.utils
         for (char ch = 'a'; ch <= 'z'; ch++) {
             String c = "com.xiaomi.joyose.utils." + ch;
             try {
                 Class<?> cls = classLoader.loadClass(c);
-                if (hasDfSignatures(cls)) {
+                if (hasDfSignatures(cls, true)) {
                     log("Found target class via alphabet scan: " + c);
-                    return cls;
+                    return new TargetMatch(cls, null);
                 }
             } catch (Throwable ignored) {
             }
@@ -168,7 +228,7 @@ public class HookInit implements IXposedHookLoadPackage {
         return null;
     }
 
-    private boolean hasDfSignatures(Class<?> cls) {
+    private boolean hasDfSignatures(Class<?> cls, boolean requireBothOverloads) {
         boolean hasFloat = false;
         boolean hasInt = false;
         for (Method m : cls.getDeclaredMethods()) {
@@ -178,15 +238,16 @@ public class HookInit implements IXposedHookLoadPackage {
                 if (p[2] == int.class && p[3] == int.class) hasInt = true;
             }
         }
-        return hasFloat && hasInt;
+        return requireBothOverloads ? (hasFloat && hasInt) : (hasFloat || hasInt);
     }
 
     /**
      * Dynamically hook float and int frame limit methods by parameter signature,
      * not hardcoded method names (which differ across Joyose versions: f/g vs g/h, etc.).
      */
-    private void hookMiDFUtils(Class<?> targetClass) {
+    private void hookMiDFUtils(Class<?> targetClass, String readerMethodName) {
         int hookedCount = 0;
+        List<Method> zeroArgIntMethods = new ArrayList<>();
 
         for (final Method method : targetClass.getDeclaredMethods()) {
             Class<?>[] p = method.getParameterTypes();
@@ -194,23 +255,7 @@ public class HookInit implements IXposedHookLoadPackage {
             // 1. Float limiter sink: (Context, String pkg, float fps, int reason)
             if (p.length == 4 && p[0] == Context.class && p[1] == String.class && p[2] == float.class && p[3] == int.class) {
                 try {
-                    XposedBridge.hookMethod(method, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            String pkg = (String) param.args[1];
-                            float fps = (Float) param.args[2];
-                            int reason = (Integer) param.args[3];
-
-                            if (pkg != null && fps > 0.0f) {
-                                param.setResult(null);
-                                clearMcdDfFile();
-                                log(">>> Intercepted & Blocked " + method.getName() + " (float) -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
-                                recordInterception((Context) param.args[0], pkg, fps, reason);
-                            } else {
-                                log("Pass-through " + method.getName() + " (float restore/clear): pkg=" + pkg + ", fps=" + fps);
-                            }
-                        }
-                    });
+                    XposedBridge.hookMethod(method, createLimiterHook(method, true));
                     hookedCount++;
                     log("Hooked float limiter method: " + method.getName() + "(Context, String, float, int)");
                 } catch (Throwable t) {
@@ -220,47 +265,75 @@ public class HookInit implements IXposedHookLoadPackage {
             // 2. Integer limiter sink: (Context, String pkg, int fps, int reason)
             else if (p.length == 4 && p[0] == Context.class && p[1] == String.class && p[2] == int.class && p[3] == int.class) {
                 try {
-                    XposedBridge.hookMethod(method, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            String pkg = (String) param.args[1];
-                            int fps = (Integer) param.args[2];
-                            int reason = (Integer) param.args[3];
-
-                            if (pkg != null && fps > 0) {
-                                param.setResult(null);
-                                clearMcdDfFile();
-                                log(">>> Intercepted & Blocked " + method.getName() + " (int) -> pkg=" + pkg + ", targetFps=" + fps + ", reason=" + reason);
-                                recordInterception((Context) param.args[0], pkg, (float) fps, reason);
-                            } else {
-                                log("Pass-through " + method.getName() + " (int restore/clear): pkg=" + pkg + ", fps=" + fps);
-                            }
-                        }
-                    });
+                    XposedBridge.hookMethod(method, createLimiterHook(method, false));
                     hookedCount++;
                     log("Hooked int limiter method: " + method.getName() + "(Context, String, int, int)");
                 } catch (Throwable t) {
                     logError("Failed to hook int limiter " + method.getName(), t);
                 }
             }
-            // 3. State getter: ()I (e.g. w.d()) -> always return -1
+            // 3. Collect () -> int candidates to avoid hooking unrelated helper methods
             else if (p.length == 0 && method.getReturnType() == int.class) {
-                try {
-                    XposedBridge.hookMethod(method, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            param.setResult(-1);
-                        }
-                    });
-                    hookedCount++;
-                    log("Hooked frame status getter: " + method.getName() + "() -> always return -1");
-                } catch (Throwable t) {
-                    logError("Failed to hook state getter " + method.getName(), t);
-                }
+                zeroArgIntMethods.add(method);
+            }
+        }
+
+        Method stateGetter = pickStateGetter(zeroArgIntMethods, readerMethodName);
+        if (stateGetter != null) {
+            try {
+                XposedBridge.hookMethod(stateGetter, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        param.setResult(-1);
+                    }
+                });
+                hookedCount++;
+                log("Hooked frame status getter: " + stateGetter.getName() + "() -> always return -1");
+            } catch (Throwable t) {
+                logError("Failed to hook state getter " + stateGetter.getName(), t);
             }
         }
 
         log("Total methods hooked in " + targetClass.getName() + ": " + hookedCount);
+    }
+
+    private static XC_MethodHook createLimiterHook(final Method method, final boolean isFloat) {
+        final String kind = isFloat ? "float" : "int";
+        return new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                String pkg = (String) param.args[1];
+                float fps = isFloat ? (Float) param.args[2] : ((Integer) param.args[2]).floatValue();
+                int reason = (Integer) param.args[3];
+
+                if (pkg != null && fps > 0.0f) {
+                    param.setResult(null);
+                    clearMcdDfFile();
+                    String fpsText = isFloat ? String.valueOf(fps) : String.valueOf((int) fps);
+                    log(">>> Intercepted & Blocked " + method.getName() + " (" + kind + ") -> pkg=" + pkg + ", targetFps=" + fpsText + ", reason=" + reason);
+                    recordInterception((Context) param.args[0], pkg, fps, reason);
+                } else {
+                    String fpsText = isFloat ? String.valueOf(fps) : String.valueOf((int) fps);
+                    log("Pass-through " + method.getName() + " (" + kind + " restore/clear): pkg=" + pkg + ", fps=" + fpsText);
+                }
+            }
+        };
+    }
+
+    private Method pickStateGetter(List<Method> zeroArgIntMethods, String readerMethodName) {
+        if (zeroArgIntMethods.isEmpty()) return null;
+        if (readerMethodName != null) {
+            for (Method m : zeroArgIntMethods) {
+                if (readerMethodName.equals(m.getName())) return m;
+            }
+        }
+        if (zeroArgIntMethods.size() == 1) {
+            return zeroArgIntMethods.get(0);
+        }
+        for (Method m : zeroArgIntMethods) {
+            if ("d".equals(m.getName())) return m;
+        }
+        return null;
     }
 
     /**
